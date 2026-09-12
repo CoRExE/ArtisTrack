@@ -7,19 +7,48 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NFCReaderUsageDescription": "Permet de scanner votre carte Pass Pass pour afficher vos titres et votre solde de voyages.",
+        "NSCameraUsageDescription": "Permet de scanner les QR codes aux arrêts de bus pour afficher les horaires en direct.",
+        "com.apple.developer.nfc.readersession.iso7816.select-identifiers": [
+          "A0000002911001",
+          "A0000002471001"
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#134785",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.NFC",
+        "android.permission.CAMERA"
+      ],
+      "package": "com.ceestos.ArtisTrack"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-sqlite",
+      "expo-asset",
+      "react-native-nfc-manager",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permet de scanner les QR codes aux arrêts de bus pour afficher les horaires en direct."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "87c5c892-c490-47d2-b844-4f8462b142a2"
+      }
     }
   }
 }
