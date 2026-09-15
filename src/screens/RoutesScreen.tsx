@@ -11,17 +11,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
-import { ChevronRight, ArrowLeftRight, X, Clock, MapPin, Bus, RotateCw } from 'lucide-react-native';
+import { ChevronRight, ArrowLeftRight, X, Clock, MapPin, Bus } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { Route, RouteCategory, RouteDirection, RouteStop, TimetableSlot } from '../types/gtfs';
 import { getRoutes, getRouteDirections, getTimetableForStopAndRoute } from '../services/artisService';
-import {
-  getApiRoutes,
-  getApiRouteDirections,
-  getApiTimetableForStop,
-  downloadApiDump,
-} from '../services/apiDumpService';
-import { isNetworkAvailable } from '../services/realtimeArtisService';
 import { RouteBadge } from '../components/RouteBadge';
 
 interface CategoryFilter {
@@ -44,7 +37,6 @@ export const RoutesScreen: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<RouteCategory | 'all'>('all');
   const [routes, setRoutes] = useState<Route[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isOnlineSource, setIsOnlineSource] = useState(false);
 
   // Modal Détail de Ligne
   const [selectedRoute, setSelectedRoute] = useState<Route | null>(null);
@@ -57,45 +49,22 @@ export const RoutesScreen: React.FC = () => {
   const [timetable, setTimetable] = useState<TimetableSlot[]>([]);
   const [loadingTimetable, setLoadingTimetable] = useState(false);
 
-  // Chargement des lignes avec séparation stricte En ligne (API dump) / Hors-ligne (SQLite)
-  const loadRoutes = async (forceRefreshDump = false) => {
+  // Chargement des lignes directement depuis la base SQLite locale
+  const loadRoutes = async () => {
     setLoading(true);
     try {
       const filter = selectedCategory === 'all' ? undefined : selectedCategory;
-
-      // 1. Vérifier si Internet est disponible pour charger le dump de l'API
-      const online = await isNetworkAvailable();
-      if (online) {
-        const ok = await downloadApiDump(forceRefreshDump);
-        if (ok) {
-          const apiRoutes = await getApiRoutes(filter);
-          if (apiRoutes.length > 0) {
-            setRoutes(apiRoutes);
-            setIsOnlineSource(true);
-            setLoading(false);
-            return;
-          }
-        }
-      }
-
-      // 2. Si pas d'Internet ou échec API, bascule exclusive sur la base interne SQLite
       const res = await getRoutes(db, filter);
       setRoutes(res);
-      setIsOnlineSource(false);
     } catch (err) {
-      console.error('Erreur chargement lignes, bascule interne SQLite:', err);
-      try {
-        const res = await getRoutes(db, selectedCategory === 'all' ? undefined : selectedCategory);
-        setRoutes(res);
-        setIsOnlineSource(false);
-      } catch {}
+      console.error('Erreur chargement lignes SQLite:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadRoutes(false);
+    loadRoutes();
   }, [db, selectedCategory]);
 
   // Ouverture d'une ligne
@@ -104,13 +73,8 @@ export const RoutesScreen: React.FC = () => {
     setLoadingDetails(true);
     setActiveDirectionIndex(0);
     try {
-      if (isOnlineSource) {
-        const dirs = await getApiRouteDirections(route.route_short_name);
-        setDirections(dirs);
-      } else {
-        const dirs = await getRouteDirections(db, route.route_id);
-        setDirections(dirs);
-      }
+      const dirs = await getRouteDirections(db, route.route_id);
+      setDirections(dirs);
     } catch (err) {
       console.error('Erreur chargement directions:', err);
     } finally {
@@ -124,25 +88,15 @@ export const RoutesScreen: React.FC = () => {
     setSelectedStopForTimetable(stop);
     setLoadingTimetable(true);
     try {
-      if (isOnlineSource) {
-        const slots = await getApiTimetableForStop(
-          stop.stop_id,
-          selectedRoute.route_short_name,
-          activeDirectionIndex,
-          new Date()
-        );
-        setTimetable(slots);
-      } else {
-        const currentDir = directions[activeDirectionIndex]?.direction_id;
-        const slots = await getTimetableForStopAndRoute(
-          db,
-          [stop.stop_id],
-          selectedRoute.route_id,
-          currentDir,
-          new Date()
-        );
-        setTimetable(slots);
-      }
+      const currentDir = directions[activeDirectionIndex]?.direction_id;
+      const slots = await getTimetableForStopAndRoute(
+        db,
+        [stop.stop_id],
+        selectedRoute.route_id,
+        currentDir,
+        new Date()
+      );
+      setTimetable(slots);
     } catch (err) {
       console.error('Erreur chargement grille horaire:', err);
     } finally {
@@ -152,36 +106,6 @@ export const RoutesScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      {/* En-tête de statut de source : En ligne (API 2026/2027) vs Hors-ligne */}
-      <View style={styles.sourceHeader}>
-        <View style={styles.sourceBadgeContainer}>
-          <View
-            style={[
-              styles.sourceDot,
-              isOnlineSource ? styles.sourceDotLive : styles.sourceDotOffline,
-            ]}
-          />
-          <Text
-            style={[
-              styles.sourceText,
-              isOnlineSource ? styles.sourceTextLive : styles.sourceTextOffline,
-            ]}
-          >
-            {isOnlineSource
-              ? 'En ligne (API 2026/2027)'
-              : 'Hors-ligne (Base interne)'}
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          style={styles.refreshDumpBtn}
-          onPress={() => loadRoutes(true)}
-          disabled={loading}
-        >
-          <RotateCw size={13} color={colors.textSecondary} style={{ marginRight: 5 }} />
-          <Text style={styles.refreshDumpText}>Actualiser</Text>
-        </TouchableOpacity>
-      </View>
 
       {/* Filtres par catégories (Chips) */}
       <View style={styles.chipsContainer}>
@@ -644,57 +568,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
-  sourceHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 4,
-  },
-  sourceBadgeContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  sourceDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 6,
-  },
-  sourceDotLive: {
-    backgroundColor: colors.success,
-  },
-  sourceDotOffline: {
-    backgroundColor: colors.textMuted,
-  },
-  sourceText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  sourceTextLive: {
-    color: colors.success,
-  },
-  sourceTextOffline: {
-    color: colors.textSecondary,
-  },
-  refreshDumpBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    backgroundColor: colors.badgeBg,
-  },
-  refreshDumpText: {
-    fontSize: 11,
-    color: colors.textSecondary,
-    fontWeight: '600',
-  },
 });
+
