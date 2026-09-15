@@ -55,8 +55,8 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     if (item.type === 'stop') {
       onSelectFavoriteStop({
         stop_name: item.title,
-        stop_lat: 0,
-        stop_lon: 0,
+        stop_lat: item.latitude || 0,
+        stop_lon: item.longitude || 0,
         child_stop_ids: item.childStopIds || [item.id],
       });
     }

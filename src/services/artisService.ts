@@ -405,8 +405,22 @@ export async function getTimetableForStopAndRoute(
   const activeServices = await getActiveServicesForDate(db, targetDate);
   if (activeServices.length === 0) return [];
 
-  const stopPlaceholders = stopIds.map(() => '?').join(',');
   const svcPlaceholders = activeServices.map(() => '?').join(',');
+  const stopPlaceholders = stopIds.map(() => '?').join(',');
+
+  // Inclure tous les quais de cet arrêt ayant le même nom
+  let targetStopIds = stopIds;
+  try {
+    const sameNameStops = await db.getAllAsync<{ stop_id: string }>(
+      `SELECT stop_id FROM stops WHERE stop_name IN (SELECT stop_name FROM stops WHERE stop_id IN (${stopPlaceholders}))`,
+      stopIds
+    );
+    if (sameNameStops.length > 0) {
+      targetStopIds = Array.from(new Set([...stopIds, ...sameNameStops.map((s) => s.stop_id)]));
+    }
+  } catch {}
+
+  const finalStopPlaceholders = targetStopIds.map(() => '?').join(',');
 
   let sql = `
     SELECT
@@ -415,11 +429,11 @@ export async function getTimetableForStopAndRoute(
       t.trip_id
     FROM stop_times st
     JOIN trips t ON st.trip_id = t.trip_id
-    WHERE st.stop_id IN (${stopPlaceholders})
+    WHERE st.stop_id IN (${finalStopPlaceholders})
       AND t.route_id = ?
       AND t.service_id IN (${svcPlaceholders})
   `;
-  const params: any[] = [...stopIds, routeId, ...activeServices];
+  const params: any[] = [...targetStopIds, routeId, ...activeServices];
 
   if (directionId !== undefined) {
     sql += ' AND t.direction_id = ?';
@@ -446,4 +460,33 @@ export async function getTimetableForStopAndRoute(
       trip_id: r.trip_id,
     };
   });
+}
+
+/**
+ * Récupère le tracé géographique (points GPS) pour une ligne et direction données.
+ */
+export async function getRouteShape(
+  db: SQLiteDatabase,
+  routeId: string,
+  directionId: number = 0
+): Promise<{ latitude: number; longitude: number }[]> {
+  try {
+    const trip = await db.getFirstAsync<{ shape_id: string }>(
+      'SELECT shape_id FROM trips WHERE route_id = ? AND direction_id = ? AND shape_id IS NOT NULL LIMIT 1',
+      [routeId, directionId]
+    );
+    if (!trip?.shape_id) return [];
+
+    const rows = await db.getAllAsync<{ shape_pt_lat: number; shape_pt_lon: number }>(
+      'SELECT shape_pt_lat, shape_pt_lon FROM shapes WHERE shape_id = ? ORDER BY shape_pt_sequence ASC',
+      [trip.shape_id]
+    );
+
+    return rows.map((r) => ({
+      latitude: r.shape_pt_lat,
+      longitude: r.shape_pt_lon,
+    }));
+  } catch {
+    return [];
+  }
 }

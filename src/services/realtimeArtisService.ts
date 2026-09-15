@@ -99,8 +99,79 @@ export function normalizeStopName(name: string): string {
 }
 
 /**
+ * Nettoie les mots de liaison et préfixes courants pour comparaison souple.
+ */
+export function simplifyStopName(name: string): string {
+  return normalizeStopName(name)
+    .replace(/^(arras|arrasgare)/, '')
+    .replace(/(st|saint|quai[a-z]?|rue|de|du|des|la|le|d|l|college|lycee)/g, '')
+    .replace(/s$/, ''); // pluriel
+}
+
+/**
+ * Dictionnaire d'alias pour combler les écarts d'orthographe ou de désignation
+ * entre la base GTFS locale et le catalogue des 443 arrêts de l'API Artis.
+ */
+export const STOP_ALIASES: Record<string, number> = {
+  // Ecoivre (avec ou sans s)
+  ecoivreruedelagare: 166,
+  ecoivresruedelagare: 166,
+  ecoivre: 166,
+  ecoivres: 166,
+  cimetiereecoivre: 411,
+  cimetiereecoivres: 411,
+
+  // Gare d'Arras (quais A à L -> arrêts API Arras Gare)
+  gare: 13,
+  arrasgare: 13,
+  arrasgarequaia: 13,
+  garequaia: 13,
+  garequaib: 13,
+  garequaic: 13,
+  garequaid: 13,
+  garequaie: 13,
+  garequaif: 13,
+  garequaig: 13,
+  garequaih: 13,
+  garequaii: 13,
+  garequaij: 13,
+  garequaik: 13,
+  garequail: 13,
+  garebrassart: 28,
+  arrasgarebrassart: 28,
+  garecarnot: 386,
+  arrasgarecarnot: 386,
+  garechanzy: 375,
+  arrasgarechanzy: 375,
+
+  // Collèges & Lycées
+  collegeadamdelahalle: 307,
+  adamdelahalle: 307,
+  adelahalle: 307,
+  collegeleslouezdieu: 174,
+  louezdieu: 174,
+
+  // Noms abrégés ou modifiés
+  gmollet: 50,
+  guymollet: 50,
+  patton: 25,
+  generalpatton: 25,
+  pasteurdainville: 236,
+  pasteurdedainville: 236,
+  pasteurachicourt: 331,
+  cimetiereachicourt: 282,
+  cimetieredachicourt: 282,
+  cimetieresaintnicolas: 188,
+  cimetieredesaintecatherine: 180,
+  pharmaciesensey: 44,
+  simoneveil: 377,
+  bracq: 284,
+  familia: 281,
+};
+
+/**
  * Récupère le catalogue des 443 arrêts physiques de l'API Artis.
- * Utilise le cache AsyncStorage (TTL 24h) et un fallback réseau avec timeout de 5s.
+ * Utilise le cache AsyncStorage (TTL 24h) et un fallback réseau avec timeout de 8s.
  */
 export async function fetchApiStops(forceRefresh = false): Promise<ApiStop[]> {
   if (!forceRefresh && inMemoryApiStops && inMemoryApiStops.length > 0) {
@@ -129,9 +200,9 @@ export async function fetchApiStops(forceRefresh = false): Promise<ApiStop[]> {
         }
       }
 
-      // 2. Téléchargement depuis l'API Artis
+      // 2. Téléchargement depuis l'API Artis (timeout 8s)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
 
       const response = await fetch(`${ARTIS_API_BASE}/infrastructure/client-front/stops`, {
         signal: controller.signal,
@@ -162,6 +233,13 @@ export async function fetchApiStops(forceRefresh = false): Promise<ApiStop[]> {
   })();
 
   return inMemoryFetchPromise;
+}
+
+/**
+ * Précharge le catalogue des arrêts en tâche de fond dès le démarrage.
+ */
+export function preloadApiStops(): void {
+  fetchApiStops().catch(() => {});
 }
 
 /**
@@ -197,40 +275,80 @@ export function parseQrUrlOrId(input: string): { stopId: number; gtfsStopId?: st
 }
 
 /**
- * Résout un arrêt API correspondant à un StopGroup (par nom ou proximité GPS).
+ * Résout un arrêt API correspondant à un StopGroup (par alias, nom, tokens ou proximité GPS).
  */
-export async function resolveApiStop(stop: {
-  stop_name: string;
-  stop_lat?: number;
-  stop_lon?: number;
-}): Promise<ApiStop | null> {
+export async function resolveApiStop(
+  stop: {
+    stop_name: string;
+    stop_lat?: number;
+    stop_lon?: number;
+  },
+  db?: SQLiteDatabase
+): Promise<ApiStop | null> {
   const stops = await fetchApiStops();
   if (stops.length === 0) return null;
 
   const normTarget = normalizeStopName(stop.stop_name);
 
-  // 1. Correspondance exacte par nom normalisé
+  // 1. Alias direct prédéfini
+  if (STOP_ALIASES[normTarget]) {
+    const aliased = stops.find((s) => s.id === STOP_ALIASES[normTarget]);
+    if (aliased) return aliased;
+  }
+
+  // 1bis. Quais de la gare d'Arras ("Gare Quai X" -> Arras Gare Quai A id 13)
+  if (normTarget.startsWith('garequai')) {
+    const gareQuaiA = stops.find((s) => s.id === 13);
+    if (gareQuaiA) return gareQuaiA;
+  }
+
+  // 2. Correspondance exacte par nom normalisé
   let found = stops.find((s) => normalizeStopName(s.name) === normTarget);
   if (found) return found;
 
-  // 2. Correspondance partielle par nom (contient le nom)
-  found = stops.find((s) => {
-    const norm = normalizeStopName(s.name);
-    return norm.includes(normTarget) || normTarget.includes(norm);
-  });
-  if (found) return found;
+  // 3. Correspondance souple par simplification de tokens (sans mots de liaison/préfixes)
+  const simpleTarget = simplifyStopName(stop.stop_name);
+  if (simpleTarget.length >= 3) {
+    found = stops.find((s) => {
+      const sSimple = simplifyStopName(s.name);
+      return (
+        sSimple.length >= 3 &&
+        (sSimple === simpleTarget ||
+          sSimple.includes(simpleTarget) ||
+          simpleTarget.includes(sSimple))
+      );
+    });
+    if (found) return found;
+  }
 
-  // 3. Correspondance par coordonnées GPS (rayon < 150m)
-  if (stop.stop_lat !== undefined && stop.stop_lon !== undefined) {
-    let bestDist = 150;
+  // 4. Correspondance par coordonnées GPS (rayon étendu à 350m pour les gares / pôles)
+  let lat = stop.stop_lat;
+  let lon = stop.stop_lon;
+
+  // Si coordonnées manquantes ou 0 (ex: favoris), tenter de les lire depuis SQLite si db est fournie
+  if ((!lat || lat === 0) && db) {
+    try {
+      const row = await db.getFirstAsync<{ stop_lat: number; stop_lon: number }>(
+        'SELECT stop_lat, stop_lon FROM stops WHERE stop_name = ? AND stop_lat > 0 LIMIT 1',
+        [stop.stop_name]
+      );
+      if (row) {
+        lat = row.stop_lat;
+        lon = row.stop_lon;
+      }
+    } catch {}
+  }
+
+  if (lat && lon && lat > 0 && lon > 0) {
+    let bestDist = 350; // Rayon de 350m
     let bestStop: ApiStop | null = null;
 
     for (const s of stops) {
-      const lat = typeof s.latitude === 'string' ? parseFloat(s.latitude) : s.latitude;
-      const lon = typeof s.longitude === 'string' ? parseFloat(s.longitude) : s.longitude;
-      if (isNaN(lat) || isNaN(lon)) continue;
+      const sLat = typeof s.latitude === 'string' ? parseFloat(s.latitude) : s.latitude;
+      const sLon = typeof s.longitude === 'string' ? parseFloat(s.longitude) : s.longitude;
+      if (isNaN(sLat) || isNaN(sLon)) continue;
 
-      const d = calculateDistanceMeters(stop.stop_lat, stop.stop_lon, lat, lon);
+      const d = calculateDistanceMeters(lat, lon, sLat, sLon);
       if (d < bestDist) {
         bestDist = d;
         bestStop = s;
@@ -239,6 +357,17 @@ export async function resolveApiStop(stop: {
 
     if (bestStop) return bestStop;
   }
+
+  // 5. Correspondance partielle par nom (contient le nom) en dernier recours
+  found = stops.find((s) => {
+    const norm = normalizeStopName(s.name);
+    return (
+      norm.length >= 4 &&
+      normTarget.length >= 4 &&
+      (norm.includes(normTarget) || normTarget.includes(norm))
+    );
+  });
+  if (found) return found;
 
   return null;
 }
@@ -267,11 +396,12 @@ function computeMinutesUntil(timeStr: string): number {
 }
 
 /**
- * Récupère les prochains passages en temps réel depuis l'API Artis.
+ * Récupère les prochains passages en temps réel depuis l'API Artis (timeout 8s + 1 retry).
  */
 export async function fetchLiveDepartures(
   apiStopId: number,
-  gtfsStopId?: string
+  gtfsStopId?: string,
+  retryCount: number = 1
 ): Promise<{
   departures: Departure[];
   disruptions: string[];
@@ -285,7 +415,7 @@ export async function fetchLiveDepartures(
     : `${ARTIS_API_BASE}/infrastructure/client-front/stops/${apiStopId}/next-passages`;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4000);
+  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 secondes
 
   try {
     const res = await fetch(url, {
@@ -295,6 +425,10 @@ export async function fetchLiveDepartures(
     clearTimeout(timeoutId);
 
     if (!res.ok) {
+      if (retryCount > 0) {
+        await new Promise((r) => setTimeout(r, 400));
+        return fetchLiveDepartures(apiStopId, gtfsStopId, retryCount - 1);
+      }
       return null;
     }
 
@@ -417,6 +551,11 @@ export async function fetchLiveDepartures(
       stopName: data.stop_name,
     };
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (retryCount > 0) {
+      await new Promise((r) => setTimeout(r, 400));
+      return fetchLiveDepartures(apiStopId, gtfsStopId, retryCount - 1);
+    }
     // Timeout ou hors-ligne
     return null;
   } finally {
@@ -455,11 +594,25 @@ export async function getHybridDepartures(
   limit: number = 25
 ): Promise<HybridDeparturesResult> {
   try {
-    // 1. Résolution de l'arrêt dans le catalogue de l'API
-    const apiStop = await resolveApiStop(stopGroup);
+    // Si stopGroup n'a pas de lat/lon valides (ex: favoris), chercher dans SQLite
+    if ((!stopGroup.stop_lat || stopGroup.stop_lat === 0) && db) {
+      try {
+        const coord = await db.getFirstAsync<{ stop_lat: number; stop_lon: number }>(
+          'SELECT stop_lat, stop_lon FROM stops WHERE stop_name = ? AND stop_lat > 0 LIMIT 1',
+          [stopGroup.stop_name]
+        );
+        if (coord) {
+          stopGroup.stop_lat = coord.stop_lat;
+          stopGroup.stop_lon = coord.stop_lon;
+        }
+      } catch {}
+    }
+
+    // 1. Résolution de l'arrêt dans le catalogue de l'API (avec base de données SQLite pour coordonnées)
+    const apiStop = await resolveApiStop(stopGroup, db);
 
     if (apiStop) {
-      // 2. Requête vers l'API temps réel Artis
+      // 2. Requête vers l'API temps réel Artis (timeout 8s et retry)
       const live = await fetchLiveDepartures(apiStop.id);
 
       // Si l'API a répondu correctement (HTTP 200)

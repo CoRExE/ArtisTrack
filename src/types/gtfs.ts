@@ -80,4 +80,6 @@ export interface FavoriteItem {
   color?: string;
   textColor?: string;
   childStopIds?: string[];
+  latitude?: number;
+  longitude?: number;
 }

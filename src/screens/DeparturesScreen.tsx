@@ -130,6 +130,20 @@ export const DeparturesScreen: React.FC<DeparturesScreenProps> = ({
       setIsLive(result.isLive);
       setDisruptions(result.disruptions);
 
+      // Si l'appel a basculé hors-ligne, programmer un réessai automatique rapide (dans 4s)
+      if (!result.isLive) {
+        setTimeout(async () => {
+          try {
+            const retryRes = await getHybridDepartures(db, selectedStop, new Date(), 25);
+            if (retryRes.isLive) {
+              setDepartures(retryRes.departures);
+              setIsLive(true);
+              setDisruptions(retryRes.disruptions);
+            }
+          } catch {}
+        }, 4000);
+      }
+
       // Vérifier le statut favori
       const favStatus = await isFavorite(selectedStop.stop_name, 'stop');
       setIsFav(favStatus);
@@ -253,6 +267,8 @@ export const DeparturesScreen: React.FC<DeparturesScreenProps> = ({
       title: selectedStop.stop_name,
       subtitle: `${selectedStop.child_stop_ids.length} quai(s)`,
       childStopIds: selectedStop.child_stop_ids,
+      latitude: selectedStop.stop_lat,
+      longitude: selectedStop.stop_lon,
     });
     setIsFav(res.isFav);
   };
@@ -398,27 +414,38 @@ export const DeparturesScreen: React.FC<DeparturesScreenProps> = ({
               <Clock size={16} color={colors.textSecondary} style={{ marginRight: 6 }} />
               <Text style={styles.listHeaderTitle}>Prochains passages</Text>
             </View>
-            <View
-              style={[
-                styles.sourceBadge,
-                isLive ? styles.sourceBadgeLive : styles.sourceBadgeOffline,
-              ]}
-            >
-              <View
-                style={[
-                  styles.sourceDot,
-                  isLive ? styles.sourceDotLive : styles.sourceDotOffline,
-                ]}
-              />
-              <Text
-                style={[
-                  styles.sourceText,
-                  isLive ? styles.sourceTextLive : styles.sourceTextOffline,
-                ]}
-              >
-                {isLive ? 'En direct (GPS)' : 'Horaires théoriques'}
-              </Text>
-            </View>
+            {(() => {
+              const hasGpsBus = isLive && departures.some((d) => d.is_realtime);
+              const badgeLabel = hasGpsBus
+                ? 'En direct (GPS)'
+                : isLive
+                ? 'En ligne (API)'
+                : 'Hors-ligne (Base locale)';
+
+              return (
+                <View
+                  style={[
+                    styles.sourceBadge,
+                    isLive ? styles.sourceBadgeLive : styles.sourceBadgeOffline,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.sourceDot,
+                      isLive ? styles.sourceDotLive : styles.sourceDotOffline,
+                    ]}
+                  />
+                  <Text
+                    style={[
+                      styles.sourceText,
+                      isLive ? styles.sourceTextLive : styles.sourceTextOffline,
+                    ]}
+                  >
+                    {badgeLabel}
+                  </Text>
+                </View>
+              );
+            })()}
           </View>
         )}
 

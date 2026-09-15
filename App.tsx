@@ -1,4 +1,4 @@
-import React, { useState, Suspense } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import {
   StyleSheet,
   Text,
@@ -18,6 +18,7 @@ import { RoutesScreen } from './src/screens/RoutesScreen';
 import { FavoritesScreen } from './src/screens/FavoritesScreen';
 import { NetworkInfoScreen } from './src/screens/NetworkInfoScreen';
 import { PassPassScreen } from './src/screens/PassPassScreen';
+import { preloadApiStops } from './src/services/realtimeArtisService';
 
 type Tab = 'departures' | 'routes' | 'passpass' | 'favorites' | 'info';
 
@@ -37,6 +38,10 @@ function LoadingScreen() {
 function MainApp() {
   const [activeTab, setActiveTab] = useState<Tab>('departures');
   const [selectedFavoriteStop, setSelectedFavoriteStop] = useState<StopGroup | null>(null);
+
+  useEffect(() => {
+    preloadApiStops();
+  }, []);
 
   const handleSelectFavoriteStop = (stop: StopGroup) => {
     setSelectedFavoriteStop(stop);
